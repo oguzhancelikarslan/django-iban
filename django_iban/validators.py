@@ -6,6 +6,9 @@ import string
 from django.core.exceptions import ValidationError, ImproperlyConfigured
 from django.utils.translation import ugettext_lazy as _
 
+from rest_framework.exceptions import ValidationError as SerializerValidationError
+
+
 try:
     from django_countries.data import COUNTRIES
 except ImportError:
@@ -170,6 +173,67 @@ class IBANValidator(object):
         # 4. Interpret the string as a decimal integer and compute the remainder of that number on division by 97.
         if int(value_digits) % 97 != 1:
             raise ValidationError(_('Not a valid IBAN.'))
+
+            
+            
+            
+class IBANValidatorSerializer(object):
+    """ A validator for International Bank Account Numbers (IBAN - ISO 13616-1:2007). """
+
+    def __init__(self, use_nordea_extensions=False, include_countries=None):
+        self.validation_countries = IBAN_COUNTRY_CODE_LENGTH.copy()
+        if use_nordea_extensions:
+            self.validation_countries.update(NORDEA_COUNTRY_CODE_LENGTH)
+
+        self.include_countries = include_countries
+        if self.include_countries:
+            for country_code in include_countries:
+                if country_code not in self.validation_countries:
+                    msg = 'Explicitly requested country code %s is not part of the configured IBAN validation set.' % country_code
+                    raise SerializerValidationError(msg)
+
+    def __call__(self, value):
+        """
+        Validates the IBAN value using the official IBAN validation algorithm.
+
+        https://en.wikipedia.org/wiki/International_Bank_Account_Number#Validating_the_IBAN
+        """
+        if value is None:
+            return value
+
+        value = value.upper().replace(' ', '').replace('-', '')
+
+        # 1. Check that the total IBAN length is correct as per the country. If not, the IBAN is invalid.
+        country_code = value[:2]
+        if country_code in self.validation_countries:
+
+            if self.validation_countries[country_code] != len(value):
+                msg_params = {'country_code': country_code, 'number': self.validation_countries[country_code]}
+                raise SerializerValidationError(_('%(country_code)s IBANs must contain %(number)s characters.') % msg_params)
+
+        else:
+            raise SerializerValidationError(_('%s is not a valid country code for IBAN.') % country_code)
+        if self.include_countries and country_code not in self.include_countries:
+            raise SerializerValidationError(_('%s IBANs are not allowed in this field.') % country_code)
+
+        # 2. Move the four initial characters to the end of the string.
+        value = value[4:] + value[:4]
+
+        # 3. Replace each letter in the string with two digits, thereby expanding the string, where
+        #    A = 10, B = 11, ..., Z = 35.
+        value_digits = ''
+        for x in value:
+            ord_value = ord(x)
+            if 48 <= ord_value <= 57:  # 0 - 9
+                value_digits += x
+            elif 65 <= ord_value <= 90:  # A - Z
+                value_digits += str(ord_value - 55)
+            else:
+                raise SerializerValidationError(_('%s is not a valid character for IBAN.') % x)
+
+        # 4. Interpret the string as a decimal integer and compute the remainder of that number on division by 97.
+        if int(value_digits) % 97 != 1:
+            raise SerializerValidationError(_('Not a valid IBAN.'))
 
 
 def swift_bic_validator(value):
